@@ -6,110 +6,100 @@ from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
 # ==============================================================================
-# 战法名称：【风口主升浪 - 趋势优化版】
-# 核心指标：
-# 1. 价格区间：5-20元；排除创业板(30开头)。
-# 2. 筹码逻辑：连续3日换手率 5%-15%（主力锁仓）。
-# 3. 技术形态：5/10/20日均线多头排列 + RSI(60-80)强势区。
-# 4. 优化因子：股价高于MA250年线（大趋势向上）+ 买入当日放量（资金攻击）。
+# 脚本名称：【风口主升浪 - 实盘筛选优化版】
+# 筛选逻辑：
+# 1. 基础过滤：价格 5-20元；排除创业板 (30开头) 与 ST 股。
+# 2. 筹码硬指标：连续 3 日换手率在 5%-15% 之间（主力控盘锁仓）。
+# 3. 技术确认：5/10/20日均线多头排列（上楼梯走势）；RSI 在 60-80 强势区。
+# 4. 趋势过滤 (优化)：股价必须在 MA250 年线上方，确保处于大上升周期 。
+# 5. 资金确认 (优化)：当日成交量 > 5日均量（资金放量启动攻击）。
 # ==============================================================================
 
 DATA_DIR = 'stock_data'
-HOLD_DAYS = 10  # 默认持有10个交易日进行收益统计
+NAMES_FILE = 'stock_names.csv'
 
-def strategy_engine(file_path):
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
+
+def process_file(file_path):
     try:
-        # 优化内存：仅读取必要字段
-        df = pd.read_csv(file_path, usecols=['日期', '股票代码', '收盘', '换手率', '成交量'])
-        df = df.sort_values(by='日期').reset_index(drop=True)
+        df = pd.read_csv(file_path)
+        if len(df) < 250: return None  # 确保有足够数据计算年线
         
-        code = str(df.iloc[0]['股票代码']).zfill(6)
-        if code.startswith('30'): return None  # 排除创业板
-
-        close = df['收盘'].values
-        vol = df['成交量'].values
-        turnover = df['换手率'].values
-        dates = df['日期'].values
+        df = df.sort_values(by='日期')
+        last = df.iloc[-1]
+        code = str(last['股票代码']).zfill(6)
         
-        # --- 计算技术指标 ---
-        ma5 = df['收盘'].rolling(5).mean().values
-        ma10 = df['收盘'].rolling(10).mean().values
-        ma20 = df['收盘'].rolling(20).mean().values
-        ma250 = df['收盘'].rolling(250).mean().values  # 优化项：趋势过滤
-        vol_ma5 = df['成交量'].rolling(5).mean().values # 优化项：成交量过滤
+        # 1. 基础过滤：排除创业板、价格区间、排除ST（假设文件名或代码不含ST）
+        if code.startswith('30') or not (5.0 <= last['收盘'] <= 20.0):
+            return None
         
-        # 快速计算 RSI (14)
-        delta = np.diff(close, prepend=close[0])
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        avg_gain = pd.Series(gain).rolling(14).mean().values
-        avg_loss = pd.Series(loss).rolling(14).mean().values
-        rs = avg_gain / (avg_loss + 1e-9)
-        rsi = 100 - (100 / (1 + rs))
-        
-        results = []
-        # 从指标生效期开始扫描
-        for i in range(250, len(df) - HOLD_DAYS):
-            # 条件1：价格与排除项
-            cond_price = 5.0 <= close[i] <= 20.0
-            # 条件2：均线多头排列 + 股价在年线之上
-            cond_ma = (ma5[i] > ma10[i] > ma20[i]) and (close[i] > ma250[i])
-            # 条件3：RSI处于强势区间
-            cond_rsi = 60 <= rsi[i] <= 80
-            # 条件4：主力锁仓（连续3日换手率 5%-15%）
-            cond_turnover = np.all((turnover[i-2:i+1] >= 5) & (turnover[i-2:i+1] <= 15))
-            # 条件5：量比确认（当日放量启动）
-            cond_vol = vol[i] > vol_ma5[i]
+        # 2. 筹码过滤：连续3日换手率 5%-15%
+        if not df['换手率'].tail(3).between(5, 15).all():
+            return None
             
-            if cond_price and cond_ma and cond_rsi and cond_turnover and cond_vol:
-                ret = (close[i + HOLD_DAYS] - close[i]) / close[i]
-                results.append({
-                    'year': dates[i][:4],
-                    'ret': ret,
-                    'win': 1 if ret > 0 else 0
-                })
-        return results
+        # 3. 趋势与技术面过滤
+        ma5 = df['收盘'].rolling(5).mean().iloc[-1]
+        ma10 = df['收盘'].rolling(10).mean().iloc[-1]
+        ma20 = df['收盘'].rolling(20).mean().iloc[-1]
+        ma250 = df['收盘'].rolling(250).mean().iloc[-1] # 年线优化 [cite: 7]
+        
+        # 均线多头且在年线上方
+        if not (ma5 > ma10 > ma20 and last['收盘'] > ma250):
+            return None
+            
+        # 4. RSI 强势区过滤 (60-80)
+        rsi = calculate_rsi(df['收盘']).iloc[-1]
+        if not (60 <= rsi <= 80):
+            return None
+
+        # 5. 资金放量确认：当日成交量 > 5日均量 
+        vol_ma5 = df['成交量'].rolling(5).mean().iloc[-1]
+        if last['成交量'] <= vol_ma5:
+            return None
+
+        return {
+            "code": code, 
+            "price": last['收盘'], 
+            "turnover": last['换手率'], 
+            "rsi": round(rsi, 2),
+            "ma250_dist": round((last['收盘'] - ma250) / ma250 * 100, 2) # 偏离年线百分比
+        }
     except Exception:
         return None
 
 def main():
     files = glob.glob(os.path.join(DATA_DIR, '*.csv'))
-    print(f"[{datetime.now()}] 启动并行扫描，样本库文件总数: {len(files)}")
+    print(f"正在根据优化逻辑筛选潜力股，扫描总数: {len(files)}...")
     
-    # 启动并行计算
     with Pool(cpu_count()) as p:
-        raw_output = p.map(strategy_engine, files)
+        results = [r for r in p.map(process_file, files) if r]
     
-    # 平坦化处理结果
-    all_trades = [t for res in raw_output if res for t in res]
-    if not all_trades:
-        print("未发现匹配“风口主升浪”战法的历史交易样本。")
+    if not results:
+        print("今日未发现符合所有优化条件的个股。")
         return
-        
-    df_results = pd.DataFrame(all_trades)
     
-    # 生成统计报告
-    annual_stats = df_results.groupby('year').agg(
-        信号次数=('ret', 'count'),
-        胜率=('win', 'mean'),
-        平均收益率=('ret', 'mean')
-    )
+    res_df = pd.DataFrame(results)
     
-    # 输出与保存
+    # 匹配股票名称
+    if os.path.exists(NAMES_FILE):
+        names = pd.read_csv(NAMES_FILE)
+        names['code'] = names['code'].astype(str).str.zfill(6)
+        res_df = pd.merge(res_df, names[['code', 'name']], on='code', how='left')
+    
+    # 按年月归档保存
     now = datetime.now()
-    output_dir = now.strftime('%Y-%m')
-    os.makedirs(output_dir, exist_ok=True)
-    report_name = os.path.join(output_dir, f"STRATEGY_REPORT_{now.strftime('%Y%m%d_%H%M%S')}.txt")
+    path = now.strftime('%Y-%m')
+    os.makedirs(path, exist_ok=True)
+    file_name = f"{path}/PICK_OPTIMIZED_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+    res_df.to_csv(file_name, index=False, encoding='utf-8-sig')
     
-    with open(report_name, 'w', encoding='utf-8') as f:
-        f.write(f"=== 风口主升浪战法：优化版回测汇总报告 ===\n")
-        f.write(f"全周期胜率: {df_results['win'].mean():.2%}\n")
-        f.write(f"总计触发样本: {len(df_results)}\n")
-        f.write("-" * 45 + "\n年度明细：\n")
-        f.write(annual_stats.to_string())
-        
-    print(annual_stats)
-    print(f"\n报告已生成至: {report_name}")
+    print(f"筛选完成！共发现 {len(res_df)} 只潜力股，结果已保存至: {file_name}")
+    print(res_df.to_string(index=False))
 
 if __name__ == "__main__":
     main()
