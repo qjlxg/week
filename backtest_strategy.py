@@ -4,102 +4,111 @@ import os
 import glob
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+import warnings
+
+warnings.filterwarnings('ignore')
 
 """
-战法回测系统 v1.0 —— 【一种模式做一万遍】
+战法名称：【一种模式做一万遍】—— 极速回测系统 v4.1
 回测逻辑：
-1. 买入：满足极致起爆信号（v4.0逻辑）时，按当日收盘价买入。
-2. 卖出：持有 5 个交易日后按收盘价卖出（或可自定义止盈止损）。
-3. 统计：按年份计算交易次数、平均收益、胜率。
+- 筛选：5-20元, 非ST/创业板/科创板/北交所。
+- 形态：20日振幅<12%, 均线多头, 涨幅>6%, 突破箱体, 量比>3.5, 换手3-8%, 无长上影。
+- 卖出：买入后第 5 个交易日按收盘价卖出。
 """
 
-def run_backtest_on_file(file_path):
+def process_single_file(file_path):
+    """
+    单个文件向量化处理函数，极大地提升单核运行效率
+    """
     try:
         df = pd.read_csv(file_path)
-        if len(df) < 60: return []
+        if len(df) < 60: return None
         
-        # 预计算必要指标
+        # 提取股票代码（假设文件名包含代码或从列中提取）
+        code = str(df['股票代码'].iloc[0]).zfill(6)
+        # 过滤创业板/科创板/北交所
+        if code.startswith(('30', '688', '8', '4')): return None
+        if not (code.startswith('60') or code.startswith('00')): return None
+
+        # --- 向量化指标计算 ---
         df['MA5'] = df['收盘'].rolling(5).mean()
         df['MA10'] = df['收盘'].rolling(10).mean()
         df['MA20'] = df['收盘'].rolling(20).mean()
         
-        trades = []
-        # 遍历历史（跳过前60天，预留最后5天卖出空间）
-        for i in range(60, len(df) - 5):
-            curr = df.iloc[i]
-            
-            # --- 极致起爆逻辑筛选 ---
-            # 1. 价格与板块过滤 (假设代码已在外部过滤，此处仅做价格过滤)
-            if not (5.0 <= curr['收盘'] <= 20.0): continue
-            
-            # 2. 极致待势：前20天振幅 < 12%
-            window_box = df.iloc[i-20:i]
-            box_amp = (window_box['最高'].max() - window_box['最低'].min()) / window_box['最低'].min()
-            if box_amp > 0.12: continue
-            
-            # 3. 均线多头
-            if not (curr['MA5'] > curr['MA10'] > curr['MA20']): continue
-            
-            # 4. 爆发强度：涨幅 > 6% 且突破箱体且量比 > 3.5
-            vol_ratio = curr['成交量'] / window_box['成交量'].mean()
-            if curr['涨跌幅'] < 6.0 or curr['收盘'] < window_box['最高'].max() or vol_ratio < 3.5:
-                continue
-            
-            # 5. 换手 3%-8% 且无长上影
-            shadow = (curr['最高'] - curr['收盘']) / curr['收盘']
-            if not (3.0 <= curr['换手率'] <= 8.0) or shadow > 0.02:
-                continue
-            
-            # --- 命中信号，执行交易 ---
-            buy_price = curr['收盘']
-            sell_price = df.iloc[i+5]['收盘'] # 持有5天卖出
-            profit_pct = (sell_price - buy_price) / buy_price * 100
-            
-            trades.append({
-                'year': str(curr['日期'])[:4],
-                'profit': profit_pct
-            })
-        return trades
+        # 过去20天箱体指标
+        df['box_high'] = df['最高'].rolling(20).shift(1).max()
+        df['box_low'] = df['最低'].rolling(20).shift(1).min()
+        df['box_amp'] = (df['box_high'] - df['box_low']) / df['box_low']
+        df['avg_vol_20'] = df['成交量'].rolling(20).shift(1).mean()
+        
+        # 未来5天收益率（用于结算）
+        df['future_return'] = (df['收盘'].shift(-5) - df['收盘']) / df['收盘'] * 100
+
+        # --- 战法条件判定 (掩码向量) ---
+        cond = (
+            (df['收盘'] >= 5.0) & (df['收盘'] <= 20.0) &                # 价格
+            (df['box_amp'] <= 0.12) &                                 # 振幅
+            (df['MA5'] > df['MA10']) & (df['MA10'] > df['MA20']) &    # 均线多头
+            (df['涨跌幅'] >= 6.0) &                                    # 涨幅强度
+            (df['收盘'] > df['box_high']) &                            # 突破箱体
+            (df['成交量'] > df['avg_vol_20'] * 3.5) &                  # 量比
+            (df['换手率'] >= 3.0) & (df['换手率'] <= 8.0) &            # 换手
+            ((df['最高'] - df['收盘']) / df['收盘'] <= 0.02)           # 无长上影
+        )
+        
+        # 提取符合条件的交易记录
+        trades = df[cond][['日期', 'future_return']].dropna()
+        if trades.empty: return None
+        
+        trades['year'] = trades['日期'].astype(str).str[:4]
+        return trades[['year', 'future_return']]
     except:
-        return []
+        return None
 
 def main():
-    files = glob.glob('./stock_data/*.csv')
-    print(f"开始回测，总计文件数: {len(files)}")
+    stock_data_path = './stock_data/*.csv'
+    files = glob.glob(stock_data_path)
+    print(f"🚀 启动并行回测引擎... 目标文件数: {len(files)}")
 
+    # 使用所有可用 CPU 核心进行并行计算
+    results = []
     with ProcessPoolExecutor() as executor:
-        results = list(executor.map(run_backtest_on_file, files))
+        # map 保持顺序，利用多进程加速
+        res_list = list(executor.map(process_single_file, files))
     
-    # 合并所有交易
-    all_trades = [trade for sublist in results for trade in sublist]
-    if not all_trades:
-        print("未发现符合逻辑的交易记录")
+    # 清理并合并数据
+    valid_dfs = [r for r in res_list if r is not None]
+    if not valid_dfs:
+        print("❌ 未发现任何符合战法信号的交易记录。")
         return
 
-    report = pd.DataFrame(all_trades)
+    all_trades = pd.concat(valid_dfs)
     
-    # 按年份统计
-    summary = report.groupby('year').agg(
-        交易次数=('profit', 'count'),
-        平均收益_pct=('profit', 'mean'),
-        胜率_pct=('profit', lambda x: (x > 0).sum() / len(x) * 100)
+    # --- 统计报表 ---
+    summary = all_trades.groupby('year')['future_return'].agg(
+        交易次数='count',
+        平均收益_pct='mean',
+        胜率_pct=lambda x: (x > 0).sum() / len(x) * 100
     ).round(2)
     
-    # 汇总行
+    # 汇总
     total_row = pd.DataFrame({
-        '交易次数': [len(report)],
-        '平均收益_pct': [report['profit'].mean()],
-        '胜率_pct': [(report['profit'] > 0).sum() / len(report) * 100]
+        '交易次数': [len(all_trades)],
+        '平均收益_pct': [all_trades['future_return'].mean()],
+        '胜率_pct': [(all_trades['future_return'] > 0).sum() / len(all_trades) * 100]
     }, index=['所有年份汇总']).round(2)
     
     final_report = pd.concat([summary, total_row])
     
-    # 保存结果
+    # --- 保存结果 ---
     os.makedirs('backtest_results', exist_ok=True)
-    save_path = f"backtest_results/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    final_report.to_csv(save_path, encoding='utf-8-sig')
+    report_path = f"backtest_results/summary_{datetime.now().strftime('%Y%m%d')}.csv"
+    final_report.to_csv(report_path, encoding='utf-8-sig')
+    
+    print("\n" + "="*30)
     print(final_report)
-    print(f"\n回测报告已保存至: {save_path}")
+    print("="*30)
+    print(f"✅ 回测报告已保存至: {report_path}")
 
 if __name__ == "__main__":
     main()
