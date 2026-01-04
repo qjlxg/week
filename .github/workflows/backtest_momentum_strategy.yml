@@ -1,0 +1,34 @@
+name: backtest_momentum_strategy
+
+on:
+  push:
+    paths:
+      - 'backtest_momentum_strategy.py'           # 脚本变动自动运行
+      - '.github/workflows/backtest_momentum_strategy.yml' # YML变动自动运行
+  workflow_dispatch: # 支持网页手动点击运行
+
+jobs:
+  backtest_process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+
+      - name: 配置Python环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 安装必要依赖
+        run: pip install pandas numpy
+
+      - name: 执行并行回测
+        run: python backtest_momentum_strategy.py
+
+      - name: 自动推送统计报告
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "BacktestBot"
+          git add .
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto Backtest Report [Code Change]"
+          git push
