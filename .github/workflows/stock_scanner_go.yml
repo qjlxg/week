@@ -1,0 +1,43 @@
+name: Strategy Auto Backtest
+
+on:
+  push:
+    paths:
+      - 'backtest.py'      # 任何 Python 脚本变动
+      - '.github/workflows/stock_scanner_go.yml' # yml 变动
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  run-strategy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Dependencies
+      run: |
+        pip install pandas numpy pytz tabulate
+
+    - name: Run Backtest
+      run: |
+        # 确保数据目录存在（实际操作中建议将数据放在特定仓位或使用 DVC）
+        mkdir -p stock_data
+        # 注意：Action 环境默认无 10 年数据，此处应包含数据获取逻辑或挂载数据卷
+        python backtest.py
+
+    - name: Run Daily Selection
+      run: python stock_selector.py # 运行你的主选股脚本
+
+    - name: Archive Results
+    - uses: actions/upload-artifact@v3
+      with:
+        name: strategy-reports
+        path: |
+          results/
+          backtest_result.txt
