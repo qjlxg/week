@@ -32,7 +32,7 @@ jobs:
         python backtest.py
 
     - name: Run Daily Selection
-      run: python stock_selector.py # 运行你的主选股脚本
+      run: python stock_scanner_go.py 
 
     - name: Archive Results
     - uses: actions/upload-artifact@v3
