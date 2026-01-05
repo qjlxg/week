@@ -3,9 +3,10 @@ name: Strategy Auto Backtest
 on:
   push:
     paths:
-      - 'backtest.py'      # 任何 Python 脚本变动
-      - '.github/workflows/stock_scanner_go.yml' # yml 变动
-  workflow_dispatch: # 支持手动触发
+      - 'backtest.py'
+      
+      - '.github/workflows/stock_scanner_go.yml.yml'
+  workflow_dispatch:
 
 jobs:
   run-strategy:
@@ -26,16 +27,18 @@ jobs:
 
     - name: Run Backtest
       run: |
-        # 确保数据目录存在（实际操作中建议将数据放在特定仓位或使用 DVC）
         mkdir -p stock_data
-        # 注意：Action 环境默认无 10 年数据，此处应包含数据获取逻辑或挂载数据卷
+        # 注意：此处假设你的 stock_data 已通过 git 提交（建议只传几只样本进行CI测试）
+        # 或者是从远程下载：curl -L http://your_data_link.zip -o data.zip && unzip data.zip
         python backtest.py
 
     - name: Run Daily Selection
-      run: python stock_scanner_go.py 
+      run: |
+        mkdir -p results
+        python stock_scanner_go.py
 
     - name: Archive Results
-    - uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: strategy-reports
         path: |
