@@ -25,12 +25,7 @@ jobs:
       run: |
         pip install pandas numpy pytz tabulate
 
-    - name: Run Backtest
-      run: |
-        mkdir -p stock_data
-        # 注意：此处假设你的 stock_data 已通过 git 提交（建议只传几只样本进行CI测试）
-        # 或者是从远程下载：curl -L http://your_data_link.zip -o data.zip && unzip data.zip
-        python backtest.py
+
 
     - name: Run Daily Selection
       run: |
