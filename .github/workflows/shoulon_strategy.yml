@@ -2,7 +2,6 @@ name: shoulon_strategy
 
 on:
   schedule:
-    # 北京时间 15:30 运行 (UTC 07:30)
     - cron: '33 7 * * *'
   workflow_dispatch: 
   push:
@@ -11,11 +10,17 @@ on:
       - '.github/workflows/shoulon_strategy.yml'
 
 jobs:
-  scan_stocks:
+  scan_and_backtest:
     runs-on: ubuntu-latest
+    # 授予写入权限，防止权限不足导致 push 失败
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # 获取完整历史以确保 rebase 成功
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,7 +30,7 @@ jobs:
       - name: Install Dependencies
         run: pip install pandas numpy
 
-      - name: Run Shoulon Strategy
+      - name: Run Strategy with Backtest
         run: python shoulon_strategy.py
 
       - name: Commit and Push Results
@@ -34,5 +39,17 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Strategy Result $(date +'%Y-%m-%d %H:%M')" && git push)
+          
+          # 检查是否有新文件生成
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "Auto: Strategy & Backtest $(date +'%Y-%m-%d %H:%M')"
+            
+            # 关键步骤：先拉取远程更新并合并，防止 rejected 错误
+            git pull --rebase origin main
+            
+            # 推送更新
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
