@@ -1,0 +1,39 @@
+name: furong_chushui_strategy
+
+on:
+  push:
+    paths:
+      - 'furong_chushui_strategy.py'
+      - '.github/workflows/furong_chushui_strategy.yml'
+  schedule:
+    # 北京时间 15:30 对应 UTC 07:30
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch: # 支持手动运行
+
+jobs:
+  stock_analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas numpy
+
+      - name: Run Strategy Script
+        run: python furong_chushui_strategy.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          # 只有在有新文件生成时才 commit
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto: 芙蓉出水战法复盘结果存储 $(date +'%Y-%m-%d %H:%M:%S')"
+          git push
