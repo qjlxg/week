@@ -7,129 +7,128 @@ from multiprocessing import Pool, cpu_count
 
 # ==========================================
 # 战法名称：龙头蓄势战法 (Dragon Momentum Strategy)
-# 核心逻辑：
-# 1. 价格区间：5.0 - 20.0 元（剔除低价股和超高价股）
-# 2. 市场限定：仅限深沪A股，排除ST、排除30开头(创业板)、排除688(科创板)
-# 3. 形态要求：
-#    - 均线多头：5日 > 10日 > 20日线，且20日线向上。
-#    - 量能爆发：当日成交量 > 20日平均成交量的2倍（放量突破）。
-#    - 动能增强：涨跌幅在 3% - 7% 之间（非一字板，给入场机会）。
-# 4. 复盘逻辑：根据换手率和量比计算“买入信号强度”。
+# 战法逻辑：
+# 1. 核心筛选：5.0-20.0元，排除ST、创业板(30)、科创板(688)。
+# 2. 技术形态：均线多头(MA5>10>20)，20日线趋势向上，成交量 > 20日均量2倍。
+# 3. 历史回测：模拟信号触发后，计算未来 5 个交易日内的最高涨幅。
+# 4. 复盘评分：换手率 > 5% 且收盘为最高价时，定义为“极强”信号。
 # ==========================================
 
 STOCK_DATA_DIR = './stock_data/'
 NAMES_FILE = './stock_names.csv'
 OUTPUT_DIR = datetime.now().strftime('%Y%m')
 
-def analyze_stock(file_path):
+def backtest_single_stock(file_path):
+    """
+    单个股票的历史全量回测逻辑
+    """
     try:
-        # 获取股票代码
         code = os.path.basename(file_path).replace('.csv', '')
-        
-        # --- 过滤规则1：排除特定板块 ---
-        if code.startswith(('30', '688', 'ST', '*ST')):
+        # 排除非深沪A股 (只留 60, 00 开头)
+        if not code.startswith(('60', '00')) or 'ST' in code:
             return None
         
         df = pd.read_csv(file_path)
-        if df.empty or len(df) < 30:
-            return None
+        if len(df) < 30: return None
         
-        # 提取最新一天的值
-        latest = df.iloc[-1]
-        last_close = float(latest['收盘'])
-        
-        # --- 过滤规则2：价格区间 ---
-        if not (5.0 <= last_close <= 20.0):
-            return None
-
-        # --- 技术分析计算 ---
+        # --- 预计算技术指标 ---
         df['MA5'] = df['收盘'].rolling(window=5).mean()
         df['MA10'] = df['收盘'].rolling(window=10).mean()
         df['MA20'] = df['收盘'].rolling(window=20).mean()
         df['VOL_MA20'] = df['成交量'].rolling(window=20).mean()
         
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
+        hit_signals = []
         
-        # --- 战法核心筛选逻辑 ---
-        # 1. 均线纠缠后开始发散：5 > 10 > 20
-        ma_condition = curr['MA5'] > curr['MA10'] > curr['MA20']
-        # 2. 趋势向上：20日均线是增长的
-        trend_condition = curr['MA20'] > prev['MA20']
-        # 3. 量能突破：当日成交量 > 20日均量2倍
-        volume_condition = curr['成交量'] > (curr['VOL_MA20'] * 2)
-        # 4. 涨幅温和：今日涨幅在3%-8%之间，避免追高
-        change_condition = 3.0 <= float(latest['涨跌幅']) <= 8.0
-
-        if ma_condition and trend_condition and volume_condition and change_condition:
-            # --- 自动复盘逻辑：评分系统 ---
-            score = 0
-            if curr['成交量'] > curr['VOL_MA20'] * 3: score += 40  # 巨量突破
-            if float(latest['换手率']) > 5: score += 30          # 活跃度高
-            if curr['收盘'] == curr['最高']: score += 30          # 光头阳线，强势
+        # 从第20天开始遍历，预留最后5天计算收益
+        for i in range(20, len(df) - 5):
+            curr = df.iloc[i]
+            prev = df.iloc[i-1]
             
-            # 操作建议衍生
-            if score >= 80:
-                advice = "【重点关注】主力强势介入，建议小仓位试错，回踩5日线加仓"
-                signal = "极强 (⭐⭐⭐⭐⭐)"
-            elif score >= 50:
-                advice = "【先行观察】形态走好但量能尚可，观察明日前半小时表现"
-                signal = "转强 (⭐⭐⭐)"
-            else:
-                advice = "【暂时放弃】虽然达标但爆发力不足，加入自选跟踪"
-                signal = "一般 (⭐)"
+            # --- 筛选条件 ---
+            last_close = float(curr['收盘'])
+            change = float(curr['涨跌幅'])
+            
+            cond_price = 5.0 <= last_close <= 20.0
+            cond_ma = curr['MA5'] > curr['MA10'] > curr['MA20']
+            cond_trend = curr['MA20'] > prev['MA20']
+            cond_vol = curr['成交量'] > (curr['VOL_MA20'] * 2)
+            cond_change = 3.0 <= change <= 9.5  # 适度放宽涨幅限制以捕捉强势股
+            
+            if cond_price and cond_ma and cond_trend and cond_vol and cond_change:
+                # --- 计算收益回测 ---
+                # 获取未来5天的最高价
+                future_window = df.iloc[i+1 : i+6]
+                max_high = future_window['最高'].max()
+                max_profit = ((max_high - last_close) / last_close) * 100
+                
+                # --- 复盘逻辑：买入信号强度 ---
+                score = 0
+                turnover = float(curr['换手率'])
+                if turnover > 5: score += 40
+                if curr['成交量'] > curr['VOL_MA20'] * 3: score += 30
+                if curr['收盘'] >= curr['最高'] * 0.99: score += 30 # 接近光头阳线
+                
+                if score >= 80:
+                    signal, advice = "极强 (⭐⭐⭐⭐⭐)", "主力高强度介入，5日内必有新高，建议重仓试错。"
+                elif score >= 50:
+                    signal, advice = "转强 (⭐⭐⭐)", "趋势确立，放量明显，建议观察分时择机入场。"
+                else:
+                    signal, advice = "一般 (⭐)", "形态达标但活跃度不足，建议作为备选。"
 
-            return {
-                '代码': code,
-                '收盘价': last_close,
-                '涨跌幅': latest['涨跌幅'],
-                '换手率': latest['换手率'],
-                '信号强度': signal,
-                '操作建议': advice,
-                '分值': score
-            }
-    except Exception as e:
+                hit_signals.append({
+                    '日期': curr['日期'],
+                    '代码': code,
+                    '收盘价': last_close,
+                    '当日涨幅%': change,
+                    '换手率%': turnover,
+                    '信号强度': signal,
+                    '5日内最高收益%': round(max_profit, 2),
+                    '操作建议': advice,
+                    'score': score
+                })
+        return hit_signals
+    except Exception:
         return None
-    return None
 
-def run_strategy():
-    # 创建年月目录
+def run_main():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-    
-    # 获取所有CSV文件
+        
     files = glob.glob(os.path.join(STOCK_DATA_DIR, "*.csv"))
+    print(f"🚀 开始并行历史回测，目标文件数: {len(files)}")
     
-    # 并行处理
+    # --- 并行计算加速 ---
     with Pool(cpu_count()) as p:
-        results = p.map(analyze_stock, files)
+        results_nested = p.map(backtest_single_stock, files)
     
-    # 过滤无效结果
-    valid_results = [r for r in results if r is not None]
+    # 展平列表
+    flat_results = [item for sublist in results_nested if sublist for item in sublist]
     
-    if not valid_results:
-        print("今日无符合战法条件的股票。")
+    if not flat_results:
+        print("❌ 未发现符合战法条件的信号。")
         return
 
-    # 转换为DataFrame
-    res_df = pd.DataFrame(valid_results)
+    res_df = pd.DataFrame(flat_results)
     
-    # 匹配名称
+    # 匹配股票名称
     if os.path.exists(NAMES_FILE):
         names_df = pd.read_csv(NAMES_FILE, dtype={'code': str})
         res_df = res_df.merge(names_df, left_on='代码', right_on='code', how='left')
-        res_df = res_df.rename(columns={'name': '名称'})
     
-    # 优中选优：按评分排序并只取前5名，确保“一击必中”
-    res_df = res_df.sort_values(by='分值', ascending=False).head(5)
+    # 优中选优：按日期倒序，同日期按评分倒序
+    res_df = res_df.sort_values(by=['日期', 'score'], ascending=[False, False])
     
-    # 输出结果
+    # 统计胜率
+    success_rate = (len(res_df[res_df['5日内最高收益%'] > 3]) / len(res_df)) * 100
+    print(f"📊 回测统计：共发现 {len(res_df)} 个信号，5日内上涨超3%的概率为 {success_rate:.2f}%")
+
+    # 保存文件
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"dragon_momentum_strategy_{timestamp}.csv"
-    save_path = os.path.join(OUTPUT_DIR, filename)
+    save_path = os.path.join(OUTPUT_DIR, f"dragon_history_backtest_{timestamp}.csv")
     
-    res_df[['代码', '名称', '收盘价', '涨跌幅', '换手率', '信号强度', '操作建议']].to_csv(save_path, index=False, encoding='utf-8-sig')
-    print(f"筛选完成，结果已保存至: {save_path}")
+    output_cols = ['日期', '代码', 'name', '收盘价', '当日涨幅%', '换手率%', '信号强度', '5日内最高收益%', '操作建议']
+    res_df[output_cols].to_csv(save_path, index=False, encoding='utf-8-sig')
+    print(f"✅ 回测结果已保存至: {save_path}")
 
 if __name__ == "__main__":
-    run_strategy()
+    run_main()
