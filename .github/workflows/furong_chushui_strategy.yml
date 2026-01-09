@@ -6,16 +6,23 @@ on:
       - 'furong_chushui_strategy.py'
       - '.github/workflows/furong_chushui_strategy.yml'
   schedule:
-    # 北京时间 15:30 对应 UTC 07:30
-    - cron: '30 7 * * 1-5'
-  workflow_dispatch: # 支持手动运行
+    # 北京时间 15:30 运行 (UTC 07:30)
+    - cron: '36 7 * * 1-5'
+  workflow_dispatch: 
 
 jobs:
   stock_analysis:
     runs-on: ubuntu-latest
+    # 授予写入权限，防止权限不足报错
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+        with:
+          # 提取完整历史，方便 rebase
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -23,8 +30,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install Dependencies
-        run: |
-          pip install pandas numpy
+        run: pip install pandas numpy
 
       - name: Run Strategy Script
         run: python furong_chushui_strategy.py
@@ -33,7 +39,15 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add .
-          # 只有在有新文件生成时才 commit
-          git diff --quiet && git diff --staged --quiet || git commit -m "Auto: 芙蓉出水战法复盘结果存储 $(date +'%Y-%m-%d %H:%M:%S')"
-          git push
+          
+          # 检查是否有新文件生成
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "Auto: 芙蓉出水战法复盘结果存储 $(date +'%Y-%m-%d %H:%M:%S')"
+            
+            # 关键步骤：先拉取远程改动并变基，避免冲突
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No changes to commit"
+          fi
