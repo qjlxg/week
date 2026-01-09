@@ -5,122 +5,145 @@ import glob
 from datetime import datetime
 import multiprocessing
 
-# ==========================================
-# 战法名称：首板缩量回踩擒龙战法
-# 核心逻辑：
-# 1. 选出近期（5日内）有涨停板的强势股（基因识别）
-# 2. 识别涨停后的倍量阴线洗盘（主力震仓）
-# 3. 寻找回踩 5/10日线且成交量极度萎缩的买点（卖盘枯竭）
-# 4. 价格区间：5.0 - 20.0 元，排除 ST 和 30/688 开头
-# ==========================================
+"""
+战法名称：【首板缩量回踩擒龙战法】
+战法逻辑说明：
+1. 强势基因：5日内出现过涨停（涨幅>=9.9%），代表大资金介入。
+2. 震仓洗盘：涨停后伴随“倍量阴线”或高位震荡，消化获利盘。
+3. 枯竭确认：当前K线呈现极度缩量（量比 < 0.6），且收盘价守住MA5或MA10均线。
+4. 买入逻辑：在缩量回踩均线处潜伏，博弈洗盘结束后的第二波主升浪。
+"""
 
-def analyze_stock(file_path, name_dict):
+# --- 全局配置 ---
+PRICE_MIN = 5.0
+PRICE_MAX = 20.0
+BACKTEST_DAYS = 60  # 回测过去60个交易日的表现
+
+def get_strategy_signal(df, i):
+    """检测第 i 行是否符合战法信号"""
+    if i < 20: return False, 0
+    
+    curr = df.iloc[i]
+    prev = df.iloc[i-1]
+    
+    # 基础过滤
+    if not (PRICE_MIN <= curr['收盘'] <= PRICE_MAX): return False, 0
+    
+    # 1. 寻找最近5日内的首板
+    lookback = df.iloc[max(0, i-5):i]
+    if lookback.empty or not any(lookback['涨跌幅'] >= 9.9): return False, 0
+    
+    # 2. 均线计算
+    ma5 = df['收盘'].rolling(5).mean().iloc[i]
+    ma10 = df['收盘'].rolling(10).mean().iloc[i]
+    
+    # 3. 缩量逻辑
+    vol_ratio = curr['成交量'] / prev['成交量']
+    if vol_ratio > 0.65: return False, 0 # 必须显著缩量
+    
+    # 4. 支撑逻辑
+    dist_ma5 = abs(curr['收盘'] - ma5) / ma5
+    dist_ma10 = abs(curr['收盘'] - ma10) / ma10
+    if dist_ma5 > 0.02 and dist_ma10 > 0.02: return False, 0
+    
+    # 评分逻辑
+    score = 50
+    if vol_ratio < 0.45: score += 30
+    if dist_ma5 < 0.01 or dist_ma10 < 0.01: score += 20
+    
+    return True, score
+
+def analyze_and_backtest(file_path, name_dict):
     try:
         df = pd.read_csv(file_path)
-        if len(df) < 20: return None
+        if len(df) < 40: return None
         
-        # 基础信息获取
         code = os.path.basename(file_path).replace('.csv', '')
-        
-        # 排除条件：ST, 创业板(30), 科创板(688)
         if code.startswith(('30', '688')): return None
         stock_name = name_dict.get(code, "未知")
-        if 'ST' in stock_name or '*ST' in stock_name: return None
+        if 'ST' in stock_name: return None
 
-        # 获取最新数据
-        latest = df.iloc[-1]
-        close_p = latest['收盘']
-        
-        # 价格筛选
-        if not (5.0 <= close_p <= 20.0): return None
-
-        # 战法逻辑计算
-        # 1. 查找最近5天内是否有过涨停 (涨幅 > 9.9%)
-        recent_df = df.tail(6)
-        has_limit_up = any(recent_df['涨跌幅'] >= 9.9)
-        if not has_limit_up: return None
-
-        # 2. 计算均线 (MA5, MA10)
-        df['MA5'] = df['收盘'].rolling(window=5).mean()
-        df['MA10'] = df['收盘'].rolling(window=10).mean()
-        
-        # 3. 缩量逻辑：今日成交量是否明显小于昨日及涨停日
-        vol_ratio = latest['成交量'] / df.iloc[-2]['成交量']
-        
-        # 4. 空间逻辑：价格是否在均线附近（回踩确认）
-        ma_dist = abs(close_p - latest['MA5']) / latest['MA5']
-        
-        # --- 策略评价体系 ---
-        score = 0
-        advice = ""
-        
-        # 评分项
-        if vol_ratio < 0.7: score += 40 # 显著缩量
-        if ma_dist < 0.02: score += 30 # 贴近均线支撑
-        if latest['涨跌幅'] > -2: score += 30 # 止跌迹象明显
-
-        # 结论输出
-        if score >= 70:
-            status = "【强烈关注】" if score >= 90 else "【试错观察】"
-            if vol_ratio < 0.5:
-                advice = "极致缩量，主力高度控盘，回踩支撑位建议轻仓试错。"
-            else:
-                advice = "趋势回踩，等待分时放量勾头时择机介入。"
-                
-            return {
-                "代码": code,
-                "名称": stock_name,
-                "收盘价": close_p,
-                "涨跌幅%": latest['涨跌幅'],
-                "量比": round(vol_ratio, 2),
+        # --- 部分 A: 今日实时信号筛选 ---
+        is_hit, score = get_strategy_signal(df, len(df)-1)
+        current_signal = None
+        if is_hit:
+            latest = df.iloc[-1]
+            current_signal = {
+                "代码": code, "名称": stock_name, "收盘价": latest['收盘'],
+                "量比": round(latest['成交量']/df.iloc[-2]['成交量'], 2),
                 "信号强度": score,
-                "复盘建议": f"{status} {advice}"
+                "操作建议": "【一击必中】符合极致缩量回踩，博弈反包" if score >= 80 else "【观察试错】趋势尚可，等待分时转强"
             }
 
-    except Exception as e:
+        # --- 部分 B: 历史回测逻辑 ---
+        backtest_results = []
+        # 在过去 BACKTEST_DAYS 天中寻找信号
+        start_idx = len(df) - BACKTEST_DAYS
+        for j in range(max(20, start_idx), len(df) - 3): # 至少留3天看涨幅
+            hit, s = get_strategy_signal(df, j)
+            if hit:
+                # 计算信号发出后 3 天内的最高涨幅
+                buy_price = df.iloc[j]['收盘']
+                max_price_3d = df.iloc[j+1:j+4]['最高'].max()
+                pnl = (max_price_3d - buy_price) / buy_price * 100
+                backtest_results.append(pnl)
+
+        return {"current": current_signal, "pnl_list": backtest_results}
+    except:
         return None
 
-def run_strategy():
-    # 1. 加载股票名称映射
+def run_main():
+    # 1. 加载股票名称
     try:
         names_df = pd.read_csv('stock_names.csv')
-        # 确保代码是字符串格式并补全6位
         names_df['code'] = names_df['code'].astype(str).str.zfill(6)
         name_dict = dict(zip(names_df['code'], names_df['name']))
     except:
         name_dict = {}
 
-    # 2. 扫描目录
-    csv_files = glob.glob('stock_data/*.csv')
+    # 2. 并行扫描
+    files = glob.glob('stock_data/*.csv')
+    print(f"🚀 开始并行分析 {len(files)} 只个股并执行回测...")
     
-    # 3. 并行处理
-    print(f"开始分析 {len(csv_files)} 只股票...")
-    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
-    results = pool.starmap(analyze_stock, [(f, name_dict) for f in csv_files])
-    pool.close()
-    pool.join()
+    with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+        raw_results = pool.starmap(analyze_and_backtest, [(f, name_dict) for f in files])
+    
+    # 3. 汇总数据
+    current_hits = []
+    all_pnl = []
+    for r in raw_results:
+        if r:
+            if r['current']: current_hits.append(r['current'])
+            all_pnl.extend(r['pnl_list'])
 
-    # 4. 过滤结果
-    final_list = [r for r in results if r is not None]
-    final_df = pd.DataFrame(final_list)
+    # 4. 统计回测胜率
+    win_rate = 0
+    avg_pnl = 0
+    if all_pnl:
+        wins = [p for p in all_pnl if p > 3.0] # 3日内最高涨幅超过3%视为有效波动
+        win_rate = len(wins) / len(all_pnl) * 100
+        avg_pnl = sum(all_pnl) / len(all_pnl)
 
-    if not final_df.empty:
-        # 按信号强度排序，只取前 10 名，保证“一击必中”
-        final_df = final_df.sort_values(by="信号强度", ascending=False).head(10)
+    # 5. 输出与保存
+    now = datetime.now()
+    folder = now.strftime('%Y%m')
+    os.makedirs(folder, exist_ok=True)
+    file_path = f"{folder}/shoulon_strategy_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+
+    if current_hits:
+        res_df = pd.DataFrame(current_hits).sort_values(by="信号强度", ascending=False)
+        # 将回测统计写入文件头部作为注释
+        summary = f"--- 战法复盘统计：过去60日成功率(3%目标): {win_rate:.2f}% | 平均潜在涨幅: {avg_pnl:.2f}% ---\n"
         
-        # 5. 创建保存目录
-        now = datetime.now()
-        dir_path = now.strftime('%Y%m')
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-            
-        file_name = f"shoulon_strategy_{now.strftime('%Y%m%d_%H%M%S')}.csv"
-        save_path = os.path.join(dir_path, file_name)
-        
-        final_df.to_csv(save_path, index=False, encoding='utf-8-sig')
-        print(f"分析完成，精选 {len(final_df)} 只个股，已保存至 {save_path}")
+        with open(file_path, 'w', encoding='utf-8-sig') as f:
+            f.write(summary)
+            res_df.to_csv(f, index=False, encoding='utf-8-sig')
+        print(f"✅ 筛选完成！发现 {len(current_hits)} 个信号。回测胜率: {win_rate:.2f}%")
     else:
-        print("今日无符合战法条件的股票。")
+        # 如果没有信号，也生成一个包含统计的文件
+        with open(file_path, 'w', encoding='utf-8-sig') as f:
+            f.write(f"今日无信号。回测统计：总计捕捉信号 {len(all_pnl)} 个，胜率 {win_rate:.2f}%")
+        print("今日未发现信号，已更新回测统计。")
 
 if __name__ == "__main__":
-    run_strategy()
+    run_main()
