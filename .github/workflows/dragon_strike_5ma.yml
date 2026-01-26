@@ -1,0 +1,38 @@
+name: dragon_strike_dragon_10ma
+
+on:
+  schedule:
+    - cron: '30 7 * * 1-5' # 北京时间 15:30
+  workflow_dispatch:
+  push:
+    paths:
+      - 'dragon_strike_5ma.py'
+      - '.github/workflows/dragon_strike_10ma.yml'
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' # 升级到3.11以支持最新的pandas
+
+      - name: Install Dependencies
+        run: pip install pandas numpy
+
+      - name: Run Dragon Strike Script
+        env:
+          TZ: 'Asia/Shanghai'
+        run: python dragon_strike_5ma.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .
+          git commit -m "Auto Scan Result: $(date +'%Y-%m-%d %H:%M:%S')" || exit 0
+          git push
