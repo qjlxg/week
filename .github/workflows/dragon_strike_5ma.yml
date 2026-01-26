@@ -1,8 +1,8 @@
-name: dragon_strike_dragon_10ma
+name: dragon_strike_dragon_5ma
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5' # 北京时间 15:30
+    - cron: '35 7 * * 1-5' # 北京时间 15:30
   workflow_dispatch:
   push:
     paths:
