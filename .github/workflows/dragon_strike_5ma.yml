@@ -7,7 +7,7 @@ on:
   push:
     paths:
       - 'dragon_strike_5ma.py'
-      - '.github/workflows/dragon_strike_10ma.yml'
+      - '.github/workflows/dragon_strike_5ma.yml'
 
 jobs:
   scan:
