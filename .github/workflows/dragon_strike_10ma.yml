@@ -1,4 +1,4 @@
-name: dragon_strike
+name: dragon_strike_dragon_10ma
 
 on:
   schedule:
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'dragon_strike.py'
-      - '.github/workflows/dragon_strike.yml'
+      - 'dragon_strike_10ma.py'
+      - '.github/workflows/dragon_strike_10ma.yml'
 
 jobs:
   scan:
@@ -27,7 +27,7 @@ jobs:
       - name: Run Dragon Strike Script
         env:
           TZ: 'Asia/Shanghai'
-        run: python dragon_strike.py
+        run: python dragon_strike_10ma.py
 
       - name: Commit and Push Results
         run: |
