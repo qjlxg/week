@@ -50,7 +50,7 @@ def screen_logic(file_path):
 
         # --- 核心逻辑 2：寻找“基因” ---
         # 过去 10 天内必须有大阳线 (主力进场信号)
-        recent_5 = df.iloc[-5:-1]
+        recent_5 = df.iloc[-6:-1]
         has_big_sun = recent_5['涨跌幅'].max() > 6.0
         if not has_big_sun: return None
         
