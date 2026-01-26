@@ -6,25 +6,28 @@ from datetime import datetime
 from multiprocessing import Pool
 
 # ==========================================
-# 战法备注：【潜龙回首·KDJ共振回踩战法】
-# 1. 灵敏指标：KDJ 在 60 以下发生金叉 (K上穿D)，预示短期超卖结束。
-# 2. 拒绝追高：今日涨幅必须在 [-2%, 3%] 之间，买在震荡位，不买拉升位。
-# 3. 强势基因：过去 10 天内必须有过一次 6% 以上的大阳线 (有主力在)。
-# 4. 缩量回踩：今日成交量小于那根大阳线成交量的 60% (洗盘完成)。
-# 5. 支撑确认：股价回踩 MA10 附近，且收盘价高于 MA20。
+# 战法备注：【潜龙出海·缩量回撤起爆战法】
+# 核心逻辑：
+# 1. 拒绝追高：涨幅超过 7% 的直接踢出。我们要找的是“含苞待放”的。
+# 2. 异动基因：过去 5-10 天内必须出现过至少一次大阳线 (涨幅>6%)，证明有主力。
+# 3. 缩量回踩：当前的成交量必须是异动当天的 50% 以下 (洗盘彻底)。
+# 4. 支撑确认：股价回踩 MA5 或 MA10 且不破，RSI 从超买区回落到 50-60 强势中位区。
+# 5. 纯正血统：排除 ST、创业板、高价股。
 # ==========================================
 
 DATA_DIR = './stock_data/'
 NAMES_FILE = './stock_names.csv'
 
-def calculate_kdj(df, n=9, m1=3, m2=3):
-    """计算 KDJ 指标"""
-    low_list = df['最低'].rolling(window=n).min()
-    high_list = df['最高'].rolling(window=n).max()
-    rsv = (df['收盘'] - low_list) / (high_list - low_list) * 100
-    df['K'] = rsv.ewm(com=m1-1).mean()
-    df['D'] = df['K'].ewm(com=m2-1).mean()
-    df['J'] = 3 * df['K'] - 2 * df['D']
+def calculate_indicators(df):
+    close = df['收盘']
+    df['MA5'] = close.rolling(5).mean()
+    df['MA10'] = close.rolling(10).mean()
+    df['MA20'] = close.rolling(20).mean()
+    # RSI6 
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=6).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=6).mean()
+    df['RSI6'] = 100 - (100 / (1 + gain/(loss + 1e-6)))
     return df
 
 def screen_logic(file_path):
@@ -33,51 +36,43 @@ def screen_logic(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             sep = '\t' if '\t' in f.readline() else ','
         df = pd.read_csv(file_path, sep=sep)
-        if len(df) < 40: return None
+        if len(df) < 30: return None
         
-        # 计算指标
-        df['MA10'] = df['收盘'].rolling(10).mean()
-        df['MA20'] = df['收盘'].rolling(20).mean()
-        df = calculate_kdj(df)
-        
+        df = calculate_indicators(df)
         curr = df.iloc[-1]
-        prev = df.iloc[-2]
         code = str(curr['股票代码']).zfill(6)
 
-        # --- 基础过滤 ---
+        # --- 过滤：排除创业板和极端价格 ---
         if code.startswith('30') or curr['收盘'] < 5.0 or curr['收盘'] > 30.0: return None
         
-        # --- 核心逻辑 1：KDJ 金叉且数值较小 ---
-        # K线向上突破D线，且D线在65以下（避免高位死叉前的假金叉）
-        kdj_gold_cross = (prev['K'] <= prev['D']) and (curr['K'] > curr['D'])
-        if not (kdj_gold_cross and curr['D'] < 65): return None
+        # --- 核心逻辑 1：拒绝追高 ---
+        if curr['涨跌幅'] > 3.0: return None # 涨太多了就不看了，我们要买在启动前
 
-        # --- 核心逻辑 2：严禁追高 ---
-        if not (-2.0 <= curr['涨幅幅' if '涨幅幅' in curr else '涨跌幅'] <= 3.5): return None
-
-        # --- 核心逻辑 3：寻找异动后的回踩 ---
+        # --- 核心逻辑 2：寻找“基因” ---
+        # 过去 10 天内必须有大阳线 (主力进场信号)
         recent_10 = df.iloc[-10:-1]
-        big_sun_day = recent_10[recent_10['涨跌幅'] > 6.0]
-        if big_sun_day.empty: return None
+        has_big_sun = recent_10['涨跌幅'].max() > 6.0
+        if not has_big_sun: return None
         
-        # 缩量判断：今日成交量 < 异动日成交量的 65%
-        max_vol = big_sun_day['成交量'].max()
-        if curr['成交量'] > max_vol * 0.65: return None
+        # --- 核心逻辑 3：缩量回踩 ---
+        # 异动那天的成交量
+        max_vol_day = recent_10.loc[recent_10['涨跌幅'].idxmax(), '成交量']
+        if curr['成交量'] > max_vol_day * 0.6: return None # 成交量必须大幅萎缩，代表抛压消失
         
-        # --- 趋势支撑 ---
-        if curr['收盘'] < curr['MA20']: return None # 必须在20日线生命线之上
-
-        # --- 综合评分 ---
-        score = 80
-        if curr['D'] < 30: score += 10 # 超低位金叉加分
-        if curr['收盘'] > curr['MA10']: score += 10 # 站稳10日线加分
+        # --- 核心逻辑 4：趋势支撑 ---
+        # 股价正在 MA5 或 MA10 附近，且没有跌破
+        on_support = (curr['收盘'] >= curr['MA10'] * 0.99) and (curr['收盘'] <= curr['MA5'] * 1.02)
         
-        if score >= 90:
+        # --- 评分 ---
+        score = 70
+        if on_support: score += 15
+        if 50 < curr['RSI6'] < 65: score += 15 # RSI 回落到黄金中位区
+        
+        if score >= 85:
             return {
                 '代码': code, '收盘': curr['收盘'], '涨跌幅': curr['涨跌幅'],
-                'K': round(curr['K'], 2), 'D': round(curr['D'], 2),
-                '评分': score, '信号': "【潜龙金叉·现身】",
-                '操作建议': "KDJ低位金叉共振，缩量回踩完毕。买入位置极佳，建议明日开盘介入，跌破MA20止损。"
+                '评分': score, '信号': "【潜龙出海·买点】",
+                '操作建议': "该股前期有主力建仓，目前属于缩量回踩。买在阴线或平盘，止损设在MA10，博弈次日反包大阳线。"
             }
     except: return None
 
@@ -88,13 +83,10 @@ if __name__ == "__main__":
     
     if results:
         names_df = pd.read_csv(NAMES_FILE, dtype={'code': str})
-        names_df['code'] = names_df['code'].str.zfill(6)
-        final_df = pd.merge(pd.DataFrame(results), names_df[['code', 'name']], left_on='代码', right_on='code', how='left')
-        
-        # 优中选优
-        final_df = final_df.sort_values(by=['评分', 'D'], ascending=[False, True]).head(2)
+        final_df = pd.merge(pd.DataFrame(results), names_df, left_on='代码', right_on='code', how='left')
+        final_df = final_df.sort_values(by='评分', ascending=False).head(3)
         
         now = datetime.now(); folder = now.strftime('%Y%m')
         os.makedirs(folder, exist_ok=True)
         save_path = f"{folder}/dragon_strike_{now.strftime('%Y%m%d_%H%M')}.csv"
-        final_df[['代码', 'name', '收盘', '涨跌幅', 'K', 'D', '评分', '信号', '操作建议']].to_csv(save_path, index=False, encoding='utf_8_sig')
+        final_df[['代码', 'name', '收盘', '涨跌幅', '评分', '信号', '操作建议']].to_csv(save_path, index=False, encoding='utf_8_sig')
