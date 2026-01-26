@@ -108,7 +108,7 @@ if __name__ == "__main__":
         now = datetime.now()
         folder = now.strftime('%Y%m')
         os.makedirs(folder, exist_ok=True)
-        save_path = f"{folder}/dragon_strike_{now.strftime('%Y%m%d_%H%M')}.csv"
+        save_path = f"{folder}/dragon_strike_5{now.strftime('%Y%m%d_%H%M')}.csv"
         
         final_df[['代码', 'name', '收盘', '涨跌幅', '评分', '信号', '操作建议']].to_csv(
             save_path, index=False, encoding='utf_8_sig'
