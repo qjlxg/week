@@ -2,7 +2,7 @@ name: shoulon_strategy
 
 on:
   schedule:
-    - cron: '33 7 * * *'
+    - cron: '33 9 * * *'
   workflow_dispatch: 
   push:
     paths:
