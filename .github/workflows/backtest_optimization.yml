@@ -1,0 +1,40 @@
+name: backtest_optimization
+
+on:
+  push:
+    paths:
+      - 'backtest_optimization.py'
+      - '.github/workflows/backtest_optimization.yml'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas numpy akshare pytz tabulate
+
+      - name: Run Optimization
+        env:
+          TZ: 'Asia/Shanghai'
+        run: |
+          # 如果 stock_data 不存在则创建演示数据或在此下载
+          mkdir -p stock_data
+          python backtest_optimization.py
+
+      - name: Commit Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add results/
+          git commit -m "chore: update backtest optimization results [skip ci]" || echo "No changes to commit"
+          git push
