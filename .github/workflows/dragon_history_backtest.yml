@@ -1,0 +1,48 @@
+name: dragon_history_backtest
+
+on:
+  schedule:
+    # 每天北京时间 15:30 自动运行
+    - cron: '39 7 * * *'
+  push:
+    paths:
+      - 'dragon_history_backtest.py'
+      - '.github/workflows/dragon_history_backtest.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 确保有写入权限
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # 获取完整历史以便 rebase
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: pip install pandas numpy
+
+      - name: Run Backtest
+        run: python dragon_history_backtest.py
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "Auto: Update Dragon Strategy Results $(date +'%Y-%m-%d %H:%M:%S')"
+            # 解决 push 被拒的关键：拉取最新的远程改动并重基
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No changes detected, skipping push."
+          fi

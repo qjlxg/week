@@ -1,0 +1,54 @@
+name: Weekly_Strategy_Full_System
+
+on:
+  # 场景1：仅当本项目相关的特定文件变动时触发
+  push:
+    paths:
+      - 'weekly_double_crossover.py'    # 精准监控海选脚本
+      - 'weekly_double_confirm.py'      # 精准监控精选脚本
+      - 'weekly_strategy_backtest.py'   # 精准监控回测脚本
+      - '.github/workflows/weekly_system.ym' # 精准监控本配置文件
+    branches:
+      - main
+
+  # 场景2：定时运行（每天北京时间 17:15）
+  schedule:
+    - cron: '15 9 * * 1-5'
+
+  # 场景3：支持手动点击按钮触发
+  workflow_dispatch:
+
+jobs:
+  stock_analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 1. 拉取代码
+        uses: actions/checkout@v3
+
+      - name: 2. 安装 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 3. 安装必要依赖
+        run: pip install pandas numpy pytz
+
+      - name: 4. 执行量能战法全套脚本
+        run: |
+          python weekly_double_crossover.py
+          python weekly_double_confirm.py
+          python weekly_strategy_backtest.py
+
+      - name: 5. 推送结果到仓库
+        run: |
+          git config --local user.email "bot@github.com"
+          git config --local user.name "StrategyBot"
+          git add .
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "精准触发更新: $(date +'%Y-%m-%d %H:%M')"
+            git push
+          else
+            echo "相关文件无变动，跳过推送。"
+          fi
