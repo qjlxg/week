@@ -1,0 +1,72 @@
+name: 🔄 极致量化系统
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'stock_scanner_go.py'
+      - '.github/workflows/stock_scanner_go.yml'
+  schedule:
+    - cron: '5 10 * * *'  
+
+permissions:
+  contents: write
+
+jobs:
+  run_scanner_and_backtest:
+    timeout-minutes: 60 
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1 
+
+      - name: 🐍 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: ⚙️ 安装依赖
+        run: |
+          pip install akshare pandas pytz numpy tabulate
+
+      - name: 🚀 运行极速量化引擎
+        run: |
+          mkdir -p stock_data
+          mkdir -p results
+          python stock_scanner_go.py
+
+      - name: 💾 自动同步并提交结果 (.md & .csv)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git config --global core.quotepath false
+          
+          # 1. 暂存所有结果（包括 md 报告和可能的 csv/txt）
+          git add results/*.md
+          git add results/*.csv || echo "No CSV files"
+          git add backtest_result.txt || echo "No backtest file"
+          
+          git stash
+          
+          # 2. 同步远程仓防止推送冲突
+          git pull origin ${{ github.ref_name }} --rebase
+          
+          # 3. 释放暂存的结果
+          git stash pop || echo "No changes to pop"
+          
+          # 4. 重新添加并检查变动
+          git add results/*.md
+          git add results/*.csv || echo "No CSV files"
+          git add backtest_result.txt || echo "No backtest file"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "✅ 发现报告更新，准备推送..."
+            git commit -m "🤖 极致策略自动更新: $(date +'%Y-%m-%d %H:%M')"
+            git push origin ${{ github.ref_name }}
+          else
+            echo "⚪ 没有发现标的变动，跳过提交。"
+          fi
